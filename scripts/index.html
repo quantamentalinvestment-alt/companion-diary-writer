@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<body>
+  <script>
+    const DB_NAME = 'diary_private_writing_db';
+    const DB_VERSION = 1;
+    const STORE_NAME = 'entries';
+
+    const toLocalISO = (d) => {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    function resolveDate(dateStr) {
+      const now = new Date();
+      if (!dateStr || dateStr.toLowerCase() === 'today') return toLocalISO(now);
+      const lower = dateStr.toLowerCase();
+      if (lower === 'yesterday') {
+        const d = new Date();
+        d.setDate(d.getDate() - 1);
+        return toLocalISO(d);
+      }
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
+      const parsed = new Date(dateStr);
+      if (!isNaN(parsed.getTime())) return toLocalISO(parsed);
+      return toLocalISO(now);
+    }
+
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = (event) => {
+          const db = event.target.result;
+          if (!db.objectStoreNames.contains(STORE_NAME)) {
+            db.createObjectStore(STORE_NAME, { keyPath: 'date' });
+          }
+        };
+        request.onsuccess = (event) => resolve(event.target.result);
+        request.onerror = (event) => reject(event.target.error);
+      });
+    }
+
+    async function getAllEntries() {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.getAll();
+        request.onsuccess = () => {
+          const entries = {};
+          request.result.forEach(entry => { entries[entry.date] = entry; });
+          resolve(entries);
+        };
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function putEntry(entry) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.put(entry);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    window['ai_edge_gallery_get_result'] = async (dataStr) => {
+      try {
+        const input = JSON.parse(dataStr);
+        const action = input.action;
+
+        if (action === 'write_entry') {
+          const date = resolveDate(input.date);
+          const title = input.title || `Entry for ${date}`;
+          const content = input.content;
+          if (!content) throw new Error("No content provided.");
+          const tags = input.tags || [];
+          const allData = await getAllEntries();
+          const existing = allData[date];
+          await putEntry({
+            date: date,
+            title: title,
+            content: content,
+            tags: tags,
+            photos: existing ? existing.photos : [],
+            updatedAt: new Date().toISOString(),
+            createdAt: existing ? existing.createdAt : new Date().toISOString()
+          });
+          return JSON.stringify({ result: `Saved your diary entry for ${date}: "${title}".` });
+        }
+
+        throw new Error(`Unknown action: ${action}`);
+
+      } catch (e) {
+        console.error(e);
+        return JSON.stringify({ error: `Error: ${e.message}` });
+      }
+    };
+  </script>
+</body>
+</html>
